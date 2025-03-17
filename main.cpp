@@ -50,17 +50,43 @@ float GetCameraY(float playerY, float radius, float angle) {
 }
 
 Camera3D camera = { 0 };
-float rotationAngle = 151.0f;
+float rotationAngle = 0.0f;
+
+float GetPlayerAimAngleDeg() {
+    const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
+    const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
+    const float angle = 180.0f/PI * std::atan2(ycalc,xcalc);
+    return angle;
+}
+float GetPlayerAimAngleRad() {
+    const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
+    const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
+    const float angle = std::atan2(ycalc,xcalc);
+    return angle;
+}
 
 void MoveCamera() {
     camera.target = player.position;
-    camera.position = Vector3({GetCameraX(player.position.x, 20.0f, (3.0f/2.0f) * std::acos(-1)),  GetCameraY(player.position.y, 20.0f, (3.0f/2.0f) * std::acos(-1)), player.position.z - 50});
+    camera.position = Vector3({GetCameraX(player.position.x, 20.0f, (3.0f/2.0f) * PI),  GetCameraY(player.position.y, 20.0f, (3.0f/2.0f) * PI), player.position.z - 50});
+}
+
+float GetXMovementRate() {
+    const float angle = GetPlayerAimAngleRad();
+    if (angle < 0) return angle/PI + 0.5;
+    return -1.0f * angle/PI + 0.5;
+}
+float GetYMovementRate() {
+    const float angle = GetPlayerAimAngleRad();
+    if (angle > PI/2.0f) return (-angle + PI)/PI;
+    if (angle < -PI/2.0f) return -(angle + PI)/PI;
+    return angle/PI;
 }
 
 void UpdatePlayer() {
     MoveCamera();
     if (IsKeyDown(KEY_W)) {
         player.position.y += 0.5f;
+        // player.position.x -= GetXMovementRate();
     }
     if (IsKeyDown(KEY_S)) {
         player.position.y -= 0.5f;
@@ -75,7 +101,6 @@ void UpdatePlayer() {
     if (IsKeyDown(KEY_UP)) player.position.z += 0.5f;
 }
 
-
 void DrawWorld() {
     for (int y = 0; y < WORLD_HEIGHT; y++) {
         for (int x = 0; x < WORLD_WIDTH; x++) {
@@ -85,25 +110,12 @@ void DrawWorld() {
             }
         }
     }
-    DrawCube({20.0f, 0.0f, 2.0f}, 1.0f, 1.0f, 2.0f, GREEN);
-    DrawCubeWires({20.0f, 0.0f, 2.0f}, 1.0f, 1.0f, 2.0f, BLACK);
-
-    DrawCube({0.0f, 20.0f, 2.0f}, 1.0f, 1.0f, 2.0f, YELLOW);
-    DrawCubeWires({0.0f, 20.0f, 2.0f}, 1.0f, 1.0f, 2.0f, BLACK);
-
-    DrawCube({0.0f, 0.0f, 20.0f}, 1.0f, 1.0f, 2.0f, BLUE);
-    DrawCubeWires({0.0f, 0.0f, 20.0f}, 1.0f, 1.0f, 2.0f, BLACK);
-
-    // DrawGrid(50, 1.0f);
 }
 
 void DrawPlayer() {
-    const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
-    const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
-    const float angle = 180.0f/std::acos(-1) * std::atan2(ycalc,xcalc);
     rlPushMatrix();
         rlTranslatef(player.position.x,player.position.y,player.position.z);
-        rlRotatef(angle, 0.0f, 0.0f, 1.0f);
+        rlRotatef(GetPlayerAimAngleDeg(), 0.0f, 0.0f, 1.0f);
         rlTranslatef(-player.position.x,-player.position.y,-player.position.z);
 
         DrawCube(player.position, 1.0f, 1.0f, 5.0f, player.color);
@@ -130,11 +142,34 @@ void HandleCamera() {
     //     rotationAngle += GetMouseDelta().x / 100;
     //     SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
     //     // const float rate = Normalize(0, SCREEN_WIDTH, rotationAngle);
-    //     // const float piInterpolation = Lerp(0, 2 * std::acos(-1), rate);
+    //     // const float piInterpolation = Lerp(0, 2 * PI, rate);
     //     MoveCamera();
     // } else {
     //     SetMouseCursor(MOUSE_CURSOR_DEFAULT);
     // }
+}
+
+void DrawDebugUI() {
+    const std::string str = "Distance from camera target x: " + to_string(camera.position.x - camera.target.x);
+    const std::string str2 = "Distance from camera target y: " + to_string(camera.position.y - camera.target.y);
+    const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
+    const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
+    const std::string str3 = "Angle of line: " + to_string(
+        180.0f/PI *
+        (std::atan2(
+            ycalc
+            ,
+            xcalc)));
+    const std::string str4 = "mouse X: " + to_string(xcalc);
+    const std::string str5 = "mouse Y: " + to_string(ycalc);
+    DrawText(str.c_str(), 10, 50, 20, BLACK);
+    DrawText(str2.c_str(), 10, 100, 20, BLACK);
+    DrawText(str3.c_str(), 10, 150, 20, BLACK);
+    DrawText(str4.c_str(), 10, 200, 20, BLACK);
+    DrawText(str5.c_str(), 10, 250, 20, BLACK);
+
+    DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
+    DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
 }
 
 void runGameLoop() {
@@ -147,18 +182,6 @@ void runGameLoop() {
         UpdatePlayer();
         HandleInput();
         HandleCamera();
-        const std::string str = "Distance from camera target x: " + to_string(camera.position.x - camera.target.x);
-        const std::string str2 = "Distance from camera target y: " + to_string(camera.position.y - camera.target.y);
-        const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
-        const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
-        const std::string str3 = "Angle of line: " + to_string(
-            180.0f/std::acos(-1) *
-            (std::atan2(
-                ycalc
-                ,
-                xcalc)));
-        const std::string str4 = "mouse X: " + to_string(xcalc);
-        const std::string str5 = "mouse Y: " + to_string(ycalc);
 
         BeginDrawing();
             ClearBackground(RAYWHITE);
@@ -166,23 +189,7 @@ void runGameLoop() {
             BeginMode3D(camera);
                 DrawWorld();
                 DrawPlayer();
-
-                // DrawCube(cubePosition, 2.0f, 2.0f, 2.0f, RED);
-                // DrawCubeWires(cubePosition, 2.0f, 2.0f, 2.0f, MAROON);
-                //
-                // DrawGrid(10, 1.0f);
-
             EndMode3D();
-            DrawText(str.c_str(), 100, 50, 20, BLACK);
-            DrawText(str2.c_str(), 100, 100, 20, BLACK);
-            DrawText(str3.c_str(), 100, 150, 20, BLACK);
-            DrawText(str4.c_str(), 100, 200, 20, BLACK);
-            DrawText(str5.c_str(), 100, 250, 20, BLACK);
-
-            DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
-            DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
-            DrawLine(0,SCREEN_HEIGHT/2, SCREEN_WIDTH, SCREEN_HEIGHT/2, BLACK);
-            DrawLine(SCREEN_WIDTH/2,0, SCREEN_WIDTH/2, SCREEN_HEIGHT, BLACK);
 
             DrawFPS(10, 10);
         EndDrawing();
