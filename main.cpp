@@ -14,7 +14,7 @@ using std::vector;
 
 constexpr int SCREEN_WIDTH = 1400;
 constexpr int SCREEN_HEIGHT = 800;
-constexpr int TILE_SIZE = 8;
+constexpr int TILE_SIZE = 32;
 constexpr int CHUNK_SIZE = 32;
 constexpr int WORLD_SIZE = 16;
 constexpr int TERRAIN_SIZE = WORLD_SIZE * CHUNK_SIZE * TILE_SIZE;
@@ -278,7 +278,41 @@ void DrawTerrainTextureLayer(Texture2D texture) {
     }
 }
 
+void PaintFiltersToImage(Image &img, const Image &normalMap) {
+    for (int z = 0; z < ACTUAL_CHUNK_SIZE; ++z) {
+        for (int w = 0; w < ACTUAL_CHUNK_SIZE; ++w) {
+            const int wrapX = (z + ACTUAL_CHUNK_SIZE) % ACTUAL_CHUNK_SIZE;
+            const int wrapY = (w + ACTUAL_CHUNK_SIZE) % ACTUAL_CHUNK_SIZE;
 
+            const Color color = GetImageColor(img, wrapX, wrapY);
+            const float normalized = ColorNormalize(color).x;
+            const float boundaryDistance = 0.5f - normalized;
+            if (normalized < 0.33f) {
+                ImageDrawPixel(&img, z, w,
+                ColorFromHSV(34, 0.6f, 0.72f)
+                );
+            } else if (normalized < 0.66f) {
+                ImageDrawPixel(&img, z, w,
+                ColorFromHSV(40, 0.64f, 0.33f)
+                );
+            } else {
+                ImageDrawPixel(&img, z, w,
+                ColorFromHSV(16, 0.90f, 0.91f)
+                );
+            }
+            const Color pixel = ApplyNormalMap(GetImageColor(img, z,w),
+            GetImageColor(normalMap, z, w),
+            {0.3, 0.3});
+            ImageDrawPixel(&img, z, w, pixel);
+            // ImageDrawPixel(&images[0], x, y,
+            //     ColorLerp(
+            //     ColorFromHSV(33, 0.67, 0.87),
+            //     ColorFromHSV(33, 0.67, 0.87),
+            //     normalized)
+            //     );
+        }
+    }
+}
 
 void runGameLoop() {
     camera.up = (Vector3){ 0.0f, 0.0f, -1.0f };
@@ -298,58 +332,26 @@ void runGameLoop() {
                 ColorFromHSV(34, 0.6f, 0.72f)),
     });
 
-    for (int z = 0; z < ACTUAL_CHUNK_SIZE; ++z) {
-        for (int w = 0; w < ACTUAL_CHUNK_SIZE; ++w) {
-            const Color pixel = ApplyNormalMap(GetImageColor(images[4], z,w),
-                GetImageColor(images[3], z, w),
-                {0.3, 0.3});
-            ImageDrawPixel(&images[4], z, w, pixel);
-        }
-    }
+    // for (int z = 0; z < ACTUAL_CHUNK_SIZE; ++z) {
+    //     for (int w = 0; w < ACTUAL_CHUNK_SIZE; ++w) {
+    //         const Color pixel = ApplyNormalMap(GetImageColor(images[4], z,w),
+    //             GetImageColor(images[3], z, w),
+    //             {0.3, 0.3});
+    //         ImageDrawPixel(&images[4], z, w, pixel);
+    //     }
+    // }
 
     vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
 
 
-    for (int x = 0; x < WORLD_SIZE; x++) {
-        for (int y = 0; y < WORLD_SIZE; y++) {
-            Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.5f);
-            for (int z = 0; z < ACTUAL_CHUNK_SIZE; ++z) {
-                for (int w = 0; w < ACTUAL_CHUNK_SIZE; ++w) {
-                    const int wrapX = (z + ACTUAL_CHUNK_SIZE) % ACTUAL_CHUNK_SIZE;
-                    const int wrapY = (w + ACTUAL_CHUNK_SIZE) % ACTUAL_CHUNK_SIZE;
-
-                    const Color color = GetImageColor(noisePart, wrapX, wrapY);
-                    const float normalized = ColorNormalize(color).x;
-                    const float boundaryDistance = 0.5f - normalized;
-                    if (normalized < 0.33f) {
-                        ImageDrawPixel(&noisePart, z, w,
-                        ColorFromHSV(34, 0.6f, 0.72f)
-                        );
-                    } else if (normalized < 0.66f) {
-                        ImageDrawPixel(&noisePart, z, w,
-                        ColorFromHSV(40, 0.64f, 0.33f)
-                        );
-                    } else {
-                        ImageDrawPixel(&noisePart, z, w,
-                        ColorFromHSV(16, 0.90f, 0.91f)
-                        );
-                    }
-                    const Color pixel = ApplyNormalMap(GetImageColor(noisePart, z,w),
-                    GetImageColor(images[3], z, w),
-                    {0.3, 0.3});
-                    ImageDrawPixel(&noisePart, z, w, pixel);
-                    // ImageDrawPixel(&images[0], x, y,
-                    //     ColorLerp(
-                    //     ColorFromHSV(33, 0.67, 0.87),
-                    //     ColorFromHSV(33, 0.67, 0.87),
-                    //     normalized)
-                    //     );
-                }
-            }
-            chunkTextures[x][y] = LoadTextureFromImage(noisePart);
-            UnloadImage(noisePart);
-        }
-    }
+    // for (int x = 0; x < WORLD_SIZE; x++) {
+    //     for (int y = 0; y < WORLD_SIZE; y++) {
+    //         Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.5f);
+    //         PaintFiltersToImage(noisePart, images[3]);
+    //         chunkTextures[x][y] = LoadTextureFromImage(noisePart);
+    //         UnloadImage(noisePart);
+    //     }
+    // }
 
     // for (int y = 0; y < TERRAIN_SIZE; ++y) {
     //     for (int x = 0; x < TERRAIN_SIZE; ++x) {
@@ -410,22 +412,26 @@ void runGameLoop() {
         BeginDrawing();
             ClearBackground(BLACK);
             BeginMode3D(camera);
-                for (int x = 0; x < WORLD_SIZE; ++x) {
-                    for (int y = 0; y < WORLD_SIZE; ++y) {
-                        if (player.position.x > x * ACTUAL_CHUNK_SIZE
-                            && player.position.x < x * ACTUAL_CHUNK_SIZE + ACTUAL_CHUNK_SIZE
-                            && player.position.y > y * ACTUAL_CHUNK_SIZE
-                            && player.position.y < y * ACTUAL_CHUNK_SIZE + ACTUAL_CHUNK_SIZE) {
-                                DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (y < WORLD_SIZE - 1) DrawTexture(chunkTextures[x][y + 1], x * ACTUAL_CHUNK_SIZE, (y + 1) * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (y > 0) DrawTexture(chunkTextures[x][y - 1], x * ACTUAL_CHUNK_SIZE, (y - 1) * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (x < WORLD_SIZE - 1) DrawTexture(chunkTextures[x + 1][y], (x + 1) * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (x > 0) DrawTexture(chunkTextures[x - 1][y], (x - 1) * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (y < WORLD_SIZE - 1 && x < WORLD_SIZE - 1) DrawTexture(chunkTextures[x + 1][y + 1], (x + 1) * ACTUAL_CHUNK_SIZE, (y + 1) * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (y > 0 && x > 0) DrawTexture(chunkTextures[x - 1][y - 1], (x - 1) * ACTUAL_CHUNK_SIZE, (y - 1) * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (x > 0 && y < WORLD_SIZE - 1) DrawTexture(chunkTextures[x - 1][y + 1], (x - 1) * ACTUAL_CHUNK_SIZE, (y + 1) * ACTUAL_CHUNK_SIZE, WHITE);
-                                if (x < WORLD_SIZE - 1 && y > 0) DrawTexture(chunkTextures[x + 1][y - 1], (x + 1) * ACTUAL_CHUNK_SIZE, (y - 1) * ACTUAL_CHUNK_SIZE, WHITE);
+                // Calculate the player's current chunk coordinates
+                int playerChunkX = static_cast<int>(player.position.x / ACTUAL_CHUNK_SIZE);
+                int playerChunkY = static_cast<int>(player.position.y / ACTUAL_CHUNK_SIZE);
+
+                // Define the range of chunks to render around the player
+                int startX = std::max(0, playerChunkX - 1);
+                int endX = std::min(WORLD_SIZE - 1, playerChunkX + 1);
+                int startY = std::max(0, playerChunkY - 1);
+                int endY = std::min(WORLD_SIZE - 1, playerChunkY + 1);
+
+                // Loop through the range and draw the chunks
+                for (int x = startX; x <= endX; ++x) {
+                    for (int y = startY; y <= endY; ++y) {
+                        if (chunkTextures[x][y].width == 0) {
+                            Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.5f);
+                            PaintFiltersToImage(noisePart, images[3]);
+                            chunkTextures[x][y] = LoadTextureFromImage(noisePart);
+                            UnloadImage(noisePart);
                         }
+                        DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
                     }
                 }
                 DrawPlayer();
