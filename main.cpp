@@ -125,6 +125,7 @@ float GetPerlinAverage(const Image &img) {
 
 Camera3D camera = { 0 };
 float rotationAngle = 0.0f;
+float cameraZoom = 0.0f;
 
 float GetPlayerAimAngleDeg() {
     const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
@@ -144,7 +145,7 @@ void MoveCamera() {
     camera.position = Vector3({
         GetCameraX(player.position.x, 200.0f, (3.0f / 2.0f) * PI),
         GetCameraY(player.position.y, 200.0f, (3.0f / 2.0f) * PI),
-        player.position.z - CAMERA_HEIGHT
+        player.position.z - CAMERA_HEIGHT + cameraZoom
     });
 }
 
@@ -204,7 +205,12 @@ void HandleInput() {
 }
 
 void HandleCamera() {
-
+    if (cameraZoom > -284.0f && GetMouseWheelMove() < 0) {
+        cameraZoom += GetMouseWheelMove();
+    }
+    if (cameraZoom < 300.0f && GetMouseWheelMove() > 0) {
+        cameraZoom += GetMouseWheelMove();
+    }
     // if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
     //     rotationAngle += GetMouseDelta().x / 100;
     //     SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
@@ -231,6 +237,7 @@ void DrawDebugUI() {
     const std::string str5 = "mouse Y: " + to_string(ycalc);
     const std::string str6 = "player x: " + to_string(player.position.x);
     const std::string str7 = "player y: " + to_string(player.position.y);
+    const std::string str8 = "zoom: " + to_string(cameraZoom);
     DrawText(str.c_str(), 10, 50, 20, BLACK);
     DrawText(str2.c_str(), 10, 100, 20, BLACK);
     DrawText(str3.c_str(), 10, 150, 20, BLACK);
@@ -238,6 +245,7 @@ void DrawDebugUI() {
     DrawText(str5.c_str(), 10, 250, 20, BLACK);
     DrawText(str6.c_str(), 10, 300, 20, BLACK);
     DrawText(str7.c_str(), 10, 350, 20, BLACK);
+    DrawText(str8.c_str(), 10, 400, 20, BLACK);
 
     DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
     DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
@@ -554,9 +562,13 @@ void DrawCubeTexture(Texture2D texture, Vector3 position, float width, float hei
     rlSetTexture(0);
 }
 
+void HandleFire() {
+
+}
+
 void runGameLoop() {
     camera.up = (Vector3){ 0.0f, 0.0f, -1.0f };
-    camera.fovy = 45.0f;
+    camera.fovy = 65.0f;
     camera.projection = CAMERA_CUSTOM;
 
     vector<Image> images({
@@ -573,7 +585,7 @@ void runGameLoop() {
     PaintNormalMapToImage(images[4], images[6], {-0.9f,-0.9f});
 
     vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
-    vector<Texture2D> textures({
+    const vector<Texture2D> textures({
         LoadTextureFromImage(images[0]),
         LoadTextureFromImage(images[3]),
         LoadTextureFromImage(images[4]),
