@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <random>
+#include <atomic>
 
 using std::to_string;
 using std::cout;
@@ -14,12 +15,12 @@ using std::vector;
 
 constexpr int SCREEN_WIDTH = 1400;
 constexpr int SCREEN_HEIGHT = 800;
-constexpr int TILE_SIZE = 32;
+constexpr int TILE_SIZE = 64;
 constexpr int CHUNK_SIZE = 32;
 constexpr int WORLD_SIZE = 16;
 constexpr int TERRAIN_SIZE = WORLD_SIZE * CHUNK_SIZE * TILE_SIZE;
 constexpr int ACTUAL_CHUNK_SIZE = CHUNK_SIZE * TILE_SIZE;
-constexpr float CAMERA_HEIGHT = 700.0f;
+constexpr float CAMERA_HEIGHT = 500.0f;
 constexpr float PLAYER_SPEED = 5.0f;
 
 enum TileType { EMPTY, ORE, CONVEYOR, FACTORY };
@@ -39,10 +40,13 @@ struct Player {
     Color color;
 };
 
-Player player = {{1.0f, 1.0f, -40.0f}, RED}; // Slightly raised for depth
+Player player = {{1.0f, 1.0f, -20.0f}, RED}; // Slightly raised for depth
 std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
 // world(WORLD_SIZE, std::vector<Tile>(WORLD_SIZE, {EMPTY, LIGHTGRAY}));
-
+std::random_device rd;  // Obtain a random seed from the hardware
+std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
+std::uniform_real_distribution<float> dist(0.0f, 1.0f); // Define range
+std::atomic<bool> loadingComplete(false);
 
 void sleep(const int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
@@ -106,6 +110,18 @@ Color ApplyNormalMap(Color baseColor, Color normalColor, Vector2 lightDir) {
         baseColor.a
     };
 }
+float GetPerlinAverage(const Image &img) {
+    int count = 0;
+    float accumulation = 0;
+    for (int x = 0; x < img.height; ++x) {
+        for (int y = 0; y < img.width; ++y) {
+            const float normalized = ColorNormalize(GetImageColor(img, x, y)).x;
+            count++;
+            accumulation +=normalized;
+        }
+    }
+    return accumulation / static_cast<float>(count);
+}
 
 Camera3D camera = { 0 };
 float rotationAngle = 0.0f;
@@ -127,7 +143,8 @@ void MoveCamera() {
     camera.target = player.position;
     camera.position = Vector3({
         GetCameraX(player.position.x, 200.0f, (3.0f / 2.0f) * PI),
-        GetCameraY(player.position.y, 200.0f, (3.0f / 2.0f) * PI), player.position.z - CAMERA_HEIGHT
+        GetCameraY(player.position.y, 200.0f, (3.0f / 2.0f) * PI),
+        player.position.z - CAMERA_HEIGHT
     });
 }
 
@@ -224,6 +241,9 @@ void DrawDebugUI() {
 
     DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
     DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
+
+    DrawLine(SCREEN_WIDTH/2, 0, SCREEN_WIDTH/2, SCREEN_HEIGHT, BLACK);
+    DrawLine(0, SCREEN_HEIGHT/2, SCREEN_WIDTH, SCREEN_HEIGHT/2, BLACK);
 }
 
 void DrawChunk(const Texture2D &tileTexture, const Chunk &chunk, int xWorld, int yWorld) {
@@ -269,13 +289,23 @@ void DrawChunkTextures(Texture2D texture, Chunk chunk, int x, int y) {
     }
 }
 
-void DrawTerrainTextureLayer(Texture2D texture) {
-    for (int y = 0; y < WORLD_SIZE; ++y) {
-        for (int x = 0; x < WORLD_SIZE; ++x) {
-            // DrawChunkTextures(texture, world[y][x], x,y);
-            DrawCube({(float)x * CHUNK_SIZE * TILE_SIZE, (float)y * CHUNK_SIZE * TILE_SIZE, -4.0f}, 1.0f, 1.0f, 1.0f, RED);
+void PaintNormalMapPixelToImage(Image &img, const Image &normalMap, const int x, const int y) {
+    const Color pixel = ApplyNormalMap(GetImageColor(img, x,y),
+            GetImageColor(normalMap, x >= normalMap.width ? x % normalMap.width : x, y >= normalMap.height ? y % normalMap.height : y),
+            {-0.2, -0.2});
+    ImageDrawPixel(&img, x, y, pixel);
+}
+
+void PaintNormalMapToImage(Image &img, const Image &normalMap, Vector2 lightDir) {
+    for (int x = 0; x < img.width; ++x) {
+        for (int y = 0; y < img.height; ++y) {
+            const Color pixel = ApplyNormalMap(GetImageColor(img, x,y),
+                GetImageColor(normalMap, x >= normalMap.width ? x % normalMap.width : x, y >= normalMap.height ? y % normalMap.height : y),
+                {lightDir.x, lightDir.y});
+            ImageDrawPixel(&img, x, y, pixel);
         }
     }
+
 }
 
 void PaintFiltersToImage(Image &img, const Image &normalMap) {
@@ -286,123 +316,280 @@ void PaintFiltersToImage(Image &img, const Image &normalMap) {
 
             const Color color = GetImageColor(img, wrapX, wrapY);
             const float normalized = ColorNormalize(color).x;
-            const float boundaryDistance = 0.5f - normalized;
-            if (normalized < 0.33f) {
+            // ImageDrawPixel(&img, z, w,
+            //     // ColorLerp(
+            //     ColorFromHSV(34, 0.6f, 0.72f));
+            // ColorFromHSV(34, 0.6f, 0.52f),
+            // boundaryDistance
+            //     )
+            // );
+            if (normalized < 0.66f) {
+                const float boundaryDistance = Normalize(0.24, 0.66, normalized);
                 ImageDrawPixel(&img, z, w,
-                ColorFromHSV(34, 0.6f, 0.72f)
-                );
-            } else if (normalized < 0.66f) {
-                ImageDrawPixel(&img, z, w,
-                ColorFromHSV(40, 0.64f, 0.33f)
-                );
-            } else {
-                ImageDrawPixel(&img, z, w,
-                ColorFromHSV(16, 0.90f, 0.91f)
+                ColorLerp(
+                ColorFromHSV(34, 0.6f, 0.72f),
+                    ColorFromHSV(16, 0.70f, 0.60f),
+                boundaryDistance
+                    )
                 );
             }
-            const Color pixel = ApplyNormalMap(GetImageColor(img, z,w),
-            GetImageColor(normalMap, z, w),
-            {0.3, 0.3});
-            ImageDrawPixel(&img, z, w, pixel);
-            // ImageDrawPixel(&images[0], x, y,
-            //     ColorLerp(
-            //     ColorFromHSV(33, 0.67, 0.87),
-            //     ColorFromHSV(33, 0.67, 0.87),
-            //     normalized)
+            // else if (normalized < 0.66f) {
+            //     const float boundaryDistance = Normalize(0.33, 0.66, normalized);
+            //     ImageDrawPixel(&img, z, w,
+            //     ColorLerp(ColorFromHSV(34, 0.6f, 0.52f),
+            //     ColorFromHSV(16, 0.70f, 0.60f),
+            //     boundaryDistance
+            //         )
             //     );
+            //
+            // }
+            else {
+                ImageDrawPixel(&img, z, w,
+                ColorFromHSV(16, 0.70f, 0.60f)
+                );
+            }
+            PaintNormalMapPixelToImage(img, normalMap, z, w);
         }
     }
+}
+
+void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, Image &normalMap) {
+    int playerChunkX = static_cast<int>(player.position.x / ACTUAL_CHUNK_SIZE);
+    int playerChunkY = static_cast<int>(player.position.y / ACTUAL_CHUNK_SIZE);
+
+    int startX = std::max(0, playerChunkX - 1);
+    int endX = std::min(WORLD_SIZE - 1, playerChunkX + 1);
+    int startY = std::max(0, playerChunkY - 1);
+    int endY = std::min(WORLD_SIZE - 1, playerChunkY + 1);
+
+    for (int x = startX; x <= endX; ++x) {
+        for (int y = startY; y <= endY; ++y) {
+            if (chunkTextures[x][y].width == 0) {
+                Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.3f);
+                PaintFiltersToImage(noisePart, normalMap);
+                // std::thread t(LoadChunkTexture, std::ref(chunkTextures), x, y, std::cref(noisePart));
+                chunkTextures[x][y] = LoadTextureFromImage(noisePart);
+                // t.detach();
+                UnloadImage(noisePart);
+            }
+            DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
+        }
+    }
+}
+
+void DrawMapGrid() {
+    for (int x = 0; x < CHUNK_SIZE + 1; ++x) {
+            DrawLine3D({(float)x * TILE_SIZE, (float)0,-5.0f}, {(float)x * TILE_SIZE, (float)ACTUAL_CHUNK_SIZE, -5.0f}, BLACK);
+            DrawLine3D({(float)x * TILE_SIZE + 1, (float)1,-5.0f}, {(float)x * TILE_SIZE + 1, (float)ACTUAL_CHUNK_SIZE + 1, -5.0f}, BLACK);
+    }
+    for (int y = 0; y < CHUNK_SIZE + 1; ++y) {
+            DrawLine3D({(float)0, (float)y * TILE_SIZE,-5.0f}, {(float)ACTUAL_CHUNK_SIZE, (float)y * TILE_SIZE, -5.0f}, BLACK);
+            DrawLine3D({(float)0, (float)y * TILE_SIZE + 1,-5.0f}, {(float)ACTUAL_CHUNK_SIZE + 1, (float)y * TILE_SIZE + 1, -5.0f}, BLACK);
+    }
+    const float groundHeight = 0;
+    Ray mouseRay = GetScreenToWorldRay((Vector2){ (float)GetMouseX(), (float)GetMouseY() }, camera);
+
+    float t = (groundHeight - mouseRay.position.z) / mouseRay.direction.z;
+    Vector3 intersection = {
+        mouseRay.position.x + t * mouseRay.direction.x,
+        groundHeight,  // Ensure it's on the ground
+        -mouseRay.position.y + t * -mouseRay.direction.y
+    };
+
+    int mouseTileX = (int)(intersection.x / TILE_SIZE);
+    int mouseTileY = (int)(-intersection.z / TILE_SIZE); // Assuming Z is "forward"
+
+
+    rlPushMatrix();
+    rlTranslatef(mouseTileX * TILE_SIZE, mouseTileY * TILE_SIZE, -5.0f);
+    DrawRectangle(0, 0, TILE_SIZE, TILE_SIZE, Fade(GREEN, 0.7f));
+    rlPopMatrix();
+}
+
+void DrawCubeTextureRec(Texture2D texture, Rectangle source, Vector3 position, float width, float height, float length, Color color)
+{
+    float x = position.x;
+    float y = position.y;
+    float z = position.z;
+    float texWidth = (float)texture.width;
+    float texHeight = (float)texture.height;
+
+    // Set desired texture to be enabled while drawing following vertex data
+    rlSetTexture(texture.id);
+
+    // We calculate the normalized texture coordinates for the desired texture-source-rectangle
+    // It means converting from (tex.width, tex.height) coordinates to [0.0f, 1.0f] equivalent
+    rlBegin(RL_QUADS);
+        rlColor4ub(color.r, color.g, color.b, color.a);
+
+        // Front face
+        rlNormal3f(0.0f, 0.0f, 1.0f);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z + length/2);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z + length/2);
+
+        // Back face
+        rlNormal3f(0.0f, 0.0f, - 1.0f);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z - length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z - length/2);
+
+        // Top face
+        rlNormal3f(0.0f, 1.0f, 0.0f);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z - length/2);
+
+        // Bottom face
+        rlNormal3f(0.0f, - 1.0f, 0.0f);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z + length/2);
+
+        // Right face
+        rlNormal3f(1.0f, 0.0f, 0.0f);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z - length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z - length/2);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x + width/2, y + height/2, z + length/2);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x + width/2, y - height/2, z + length/2);
+
+        // Left face
+        rlNormal3f( - 1.0f, 0.0f, 0.0f);
+        rlTexCoord2f(source.x/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z - length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, (source.y + source.height)/texHeight);
+        rlVertex3f(x - width/2, y - height/2, z + length/2);
+        rlTexCoord2f((source.x + source.width)/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z + length/2);
+        rlTexCoord2f(source.x/texWidth, source.y/texHeight);
+        rlVertex3f(x - width/2, y + height/2, z - length/2);
+
+    rlEnd();
+
+    rlSetTexture(0);
+}
+
+void DrawCubeTexture(Texture2D texture, Vector3 position, float width, float height, float length, Color color)
+{
+    float x = position.x;
+    float y = position.y;
+    float z = position.z;
+
+    // Set desired texture to be enabled while drawing following vertex data
+    rlSetTexture(texture.id);
+
+    // Vertex data transformation can be defined with the commented lines,
+    // but in this example we calculate the transformed vertex data directly when calling rlVertex3f()
+    //rlPushMatrix();
+        // NOTE: Transformation is applied in inverse order (scale -> rotate -> translate)
+        //rlTranslatef(2.0f, 0.0f, 0.0f);
+        //rlRotatef(45, 0, 1, 0);
+        //rlScalef(2.0f, 2.0f, 2.0f);
+
+        rlBegin(RL_QUADS);
+            rlColor4ub(color.r, color.g, color.b, color.a);
+            // Front Face
+            rlNormal3f(0.0f, 0.0f, 1.0f);       // Normal Pointing Towards Viewer
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top Right Of The Texture and Quad
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top Left Of The Texture and Quad
+            // Back Face
+            rlNormal3f(0.0f, 0.0f, - 1.0f);     // Normal Pointing Away From Viewer
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom Right Of The Texture and Quad
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Left Of The Texture and Quad
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom Left Of The Texture and Quad
+            // Top Face
+            rlNormal3f(0.0f, 1.0f, 0.0f);       // Normal Pointing Up
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top Left Of The Texture and Quad
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Bottom Left Of The Texture and Quad
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Bottom Right Of The Texture and Quad
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
+            // Bottom Face
+            rlNormal3f(0.0f, - 1.0f, 0.0f);     // Normal Pointing Down
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Top Right Of The Texture and Quad
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Top Left Of The Texture and Quad
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
+            // Right face
+            rlNormal3f(1.0f, 0.0f, 0.0f);       // Normal Pointing Right
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z - length/2);  // Bottom Right Of The Texture and Quad
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z - length/2);  // Top Right Of The Texture and Quad
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x + width/2, y + height/2, z + length/2);  // Top Left Of The Texture and Quad
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x + width/2, y - height/2, z + length/2);  // Bottom Left Of The Texture and Quad
+            // Left Face
+            rlNormal3f( - 1.0f, 0.0f, 0.0f);    // Normal Pointing Left
+            rlTexCoord2f(0.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z - length/2);  // Bottom Left Of The Texture and Quad
+            rlTexCoord2f(1.0f, 0.0f); rlVertex3f(x - width/2, y - height/2, z + length/2);  // Bottom Right Of The Texture and Quad
+            rlTexCoord2f(1.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z + length/2);  // Top Right Of The Texture and Quad
+            rlTexCoord2f(0.0f, 1.0f); rlVertex3f(x - width/2, y + height/2, z - length/2);  // Top Left Of The Texture and Quad
+        rlEnd();
+    //rlPopMatrix();
+
+    rlSetTexture(0);
 }
 
 void runGameLoop() {
     camera.up = (Vector3){ 0.0f, 0.0f, -1.0f };
     camera.fovy = 45.0f;
     camera.projection = CAMERA_CUSTOM;
-    std::random_device rd;  // Obtain a random seed from the hardware
-    std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f); // Define range
-
 
     vector<Image> images({
         GenImageChecked(TERRAIN_SIZE, TERRAIN_SIZE, CHUNK_SIZE * TILE_SIZE, CHUNK_SIZE * TILE_SIZE, LIGHTGRAY, SKYBLUE),
         LoadImage("sand-texture-small.png"),
         LoadImage("sand-grain.png"),
         LoadImage("terrain-normal2.png"),
-        GenImageColor(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE,
-                ColorFromHSV(34, 0.6f, 0.72f)),
+        GenImageColor(TILE_SIZE, TILE_SIZE,
+                ColorFromHSV(25, 0.49f, 0.44f)),
+        GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, 0, 0, 1.0f),
+        LoadImage("terrain-normal2.png")
     });
-
-    // for (int z = 0; z < ACTUAL_CHUNK_SIZE; ++z) {
-    //     for (int w = 0; w < ACTUAL_CHUNK_SIZE; ++w) {
-    //         const Color pixel = ApplyNormalMap(GetImageColor(images[4], z,w),
-    //             GetImageColor(images[3], z, w),
-    //             {0.3, 0.3});
-    //         ImageDrawPixel(&images[4], z, w, pixel);
-    //     }
-    // }
+    ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
+    PaintNormalMapToImage(images[4], images[6], {-0.9f,-0.9f});
 
     vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
-
-
-    // for (int x = 0; x < WORLD_SIZE; x++) {
-    //     for (int y = 0; y < WORLD_SIZE; y++) {
-    //         Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.5f);
-    //         PaintFiltersToImage(noisePart, images[3]);
-    //         chunkTextures[x][y] = LoadTextureFromImage(noisePart);
-    //         UnloadImage(noisePart);
-    //     }
-    // }
-
-    // for (int y = 0; y < TERRAIN_SIZE; ++y) {
-    //     for (int x = 0; x < TERRAIN_SIZE; ++x) {
-    //         const Color color = GetImageColor(images[0], x, y);
-    //         const float normalized = ColorNormalize(color).x;
-    //         const float boundaryDistance = 0.5f - normalized;
-    //         ImageDrawPixel(&images[0], x, y,
-    //             ColorLerp(
-    //             ColorFromHSV(33, 0.67, 0.87),
-    //             ColorFromHSV(33, 0.67, 0.87),
-    //             normalized)
-    //             );
-    //     }
-    // }
-
-
-
-    // for (int y = 0; y < WORLD_SIZE * CHUNK_SIZE; ++y) {
-    //     for (int x = 0; x < WORLD_SIZE * CHUNK_SIZE; ++x) {
-    //         ImageDraw(&images[0], images[1],
-    //                   {0, 0, (float)images[1].width, (float)images[1].height},
-    //                   {(float)x * images[1].width , (float)y * images[1].height, (float)images[1].width, (float)images[1].height},
-    //                   Fade(WHITE, 0.5f));
-    //         ImageDraw(&images[0], images[2],
-    //                   {0, 0, (float)images[2].width, (float)images[2].height},
-    //                   {(float)x * images[2].width , (float)y * images[2].height, (float)images[2].width, (float)images[2].height},
-    //                   Fade(WHITE, 0.5f));
-    //     }
-    // }
-//     ImageDraw(&images[0], images[1],
-//   {0, 0, (float)images[1].width, (float)images[1].height},
-//   {(float)0 , (float)0 , (float)images[1].width, (float)images[1].height},
-//   WHITE);
-//     ImageDraw(&images[0], images[1],
-// {0, 0, (float)images[1].width, (float)images[1].height},
-// {(float)images[1].width , (float)0 , (float)images[1].width, (float)images[1].height},
-// WHITE);
-//     ImageDraw(&images[0], images[1],
-// {0, 0, (float)images[1].width, (float)images[1].height},
-// {(float)0 , (float)images[1].height , (float)images[1].width, (float)images[1].height},
-// WHITE);
-//     ImageDraw(&images[0], images[1],
-// {0, 0, (float)images[1].width, (float)images[1].height},
-// {(float)images[1].width , (float)images[1].height , (float)images[1].width, (float)images[1].height},
-// WHITE);
-
     vector<Texture2D> textures({
         LoadTextureFromImage(images[0]),
+        LoadTextureFromImage(images[3]),
+        LoadTextureFromImage(images[4]),
     });
 
 
+    vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
+    vector<vector<float>> chunkPerlinAverage(CHUNK_SIZE,  vector<float>(CHUNK_SIZE));
+    for (int x = 0; x < CHUNK_SIZE; ++x) {
+        for (int y = 0; y < CHUNK_SIZE; ++y) {
+            Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, x * TILE_SIZE, y * TILE_SIZE, 0.05f);
+            chunkPerlinAverage[x][y] = GetPerlinAverage(noisePart);
+            // rockPlacementTextures[x][y] = LoadTextureFromImage(noisePart);
+            UnloadImage(noisePart);
+        }
+    }
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         UpdatePlayer();
@@ -412,31 +599,27 @@ void runGameLoop() {
         BeginDrawing();
             ClearBackground(BLACK);
             BeginMode3D(camera);
-                // Calculate the player's current chunk coordinates
-                int playerChunkX = static_cast<int>(player.position.x / ACTUAL_CHUNK_SIZE);
-                int playerChunkY = static_cast<int>(player.position.y / ACTUAL_CHUNK_SIZE);
-
-                // Define the range of chunks to render around the player
-                int startX = std::max(0, playerChunkX - 1);
-                int endX = std::min(WORLD_SIZE - 1, playerChunkX + 1);
-                int startY = std::max(0, playerChunkY - 1);
-                int endY = std::min(WORLD_SIZE - 1, playerChunkY + 1);
-
-                // Loop through the range and draw the chunks
-                for (int x = startX; x <= endX; ++x) {
-                    for (int y = startY; y <= endY; ++y) {
-                        if (chunkTextures[x][y].width == 0) {
-                            Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.5f);
-                            PaintFiltersToImage(noisePart, images[3]);
-                            chunkTextures[x][y] = LoadTextureFromImage(noisePart);
-                            UnloadImage(noisePart);
+                DrawTerrainTextureLayer(chunkTextures, images[3]);
+                DrawMapGrid();
+                for (int x = 0; x < CHUNK_SIZE; ++x) {
+                    for (int y = 0; y < CHUNK_SIZE; ++y) {
+                        // DrawTexture(rockPlacementTextures[x][y], x * TILE_SIZE, y * TILE_SIZE, WHITE);
+                        if (chunkPerlinAverage[x][y] < 0.3f) {
+                            // DrawCubeTexture(textures[2], {(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
+                            //     TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
+                            DrawCubeWiresV({(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
+                                {TILE_SIZE, TILE_SIZE, TILE_SIZE}, BLACK);
+                            DrawCubeTextureRec(textures[2], {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
+                                {(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
+                                TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
+                            // DrawCube({(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2}, TILE_SIZE, TILE_SIZE, TILE_SIZE, ColorFromHSV(34, 0.6f, 0.72f));
                         }
-                        DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
                     }
                 }
+                // DrawCube({TILE_SIZE/2,TILE_SIZE/2,-TILE_SIZE/2}, TILE_SIZE, TILE_SIZE, TILE_SIZE, BLUE);
                 DrawPlayer();
             EndMode3D();
-            DrawDebugUI();
+            // DrawDebugUI();
             DrawFPS(10, 10);
         EndDrawing();
     }
@@ -454,6 +637,13 @@ void runGameLoop() {
             UnloadTexture(chunkTextures[x][y]);
         }
     }
+
+    for (int x = 0; x < CHUNK_SIZE; ++x) {
+        for (int y = 0; y < CHUNK_SIZE; ++y) {
+            UnloadTexture(rockPlacementTextures[x][y]);
+        }
+    }
+
 }
 
 
