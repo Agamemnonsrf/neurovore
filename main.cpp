@@ -30,23 +30,32 @@ struct Tile {
     Color color;
 };
 
-struct Chunk {
-    bool isInView;
-    std::vector<Tile> tiles;
-};
-
 struct Player {
     Vector3 position;
     Color color;
 };
 
+struct Projectile {
+    Vector2 position;
+    float velocity;
+    float acceleration;
+    float direction;
+    int damage;
+};
+
+struct StoneBlock {
+    Vector2 position;
+    int health;
+};
+
 Player player = {{1.0f, 1.0f, -20.0f}, RED}; // Slightly raised for depth
-std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
-// world(WORLD_SIZE, std::vector<Tile>(WORLD_SIZE, {EMPTY, LIGHTGRAY}));
+// std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
 std::random_device rd;  // Obtain a random seed from the hardware
 std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
 std::uniform_real_distribution<float> dist(0.0f, 1.0f); // Define range
-std::atomic<bool> loadingComplete(false);
+vector<Projectile> projectiles;
+vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
+vector<StoneBlock> stoneBlocks;
 
 void sleep(const int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
@@ -206,10 +215,10 @@ void HandleInput() {
 
 void HandleCamera() {
     if (cameraZoom > -284.0f && GetMouseWheelMove() < 0) {
-        cameraZoom += GetMouseWheelMove();
+        cameraZoom += GetMouseWheelMove() * 4;
     }
     if (cameraZoom < 300.0f && GetMouseWheelMove() > 0) {
-        cameraZoom += GetMouseWheelMove();
+        cameraZoom += GetMouseWheelMove() * 4;
     }
     // if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
     //     rotationAngle += GetMouseDelta().x / 100;
@@ -227,12 +236,7 @@ void DrawDebugUI() {
     const std::string str2 = "Distance from camera target y: " + to_string(camera.position.y - camera.target.y);
     const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
     const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
-    const std::string str3 = "Angle of line: " + to_string(
-        180.0f/PI *
-        (std::atan2(
-            ycalc
-            ,
-            xcalc)));
+    const std::string str3 = "Angle of line: " + to_string(-GetPlayerAimAngleDeg());
     const std::string str4 = "mouse X: " + to_string(xcalc);
     const std::string str5 = "mouse Y: " + to_string(ycalc);
     const std::string str6 = "player x: " + to_string(player.position.x);
@@ -254,47 +258,8 @@ void DrawDebugUI() {
     DrawLine(0, SCREEN_HEIGHT/2, SCREEN_WIDTH, SCREEN_HEIGHT/2, BLACK);
 }
 
-void DrawChunk(const Texture2D &tileTexture, const Chunk &chunk, int xWorld, int yWorld) {
-    const int sideSize = sqrt(CHUNK_SIZE);
-    for (int y = 0; y < sideSize; ++y) {
-        for (int x = 0; x < sideSize; ++x) {
-            //YOU NEED AN INITIAL CHUNK COORDINATE, THEN PLACE ALL TEXTURES RELATIVE TO THAT COORDINATE
-            DrawTexture(tileTexture, x * TILE_SIZE, y * TILE_SIZE, chunk.tiles[y].color);
-            // DrawRectangleLines(x * TILE_SIZE * xWorld, y * TILE_SIZE * yWorld, TILE_SIZE, TILE_SIZE, BLACK);
-            // std::string str = "x " + to_string(xWorld) + " y " + to_string(yWorld);
-            // DrawText(str.c_str(),  x * TILE_SIZE * xWorld, y * TILE_SIZE * yWorld, 20, WHITE);
-        }
-    }
-}
-
-void DrawWorld(Texture2D tileTexture) {
-    const int sideSize = sqrt(WORLD_SIZE);
-    for (int y = 0; y < sideSize; ++y) {
-        for (int x = 0; x < sideSize; ++x) {
-            DrawChunk(tileTexture, world[y][x], x, y);
-            DrawCube({(float)x * CHUNK_SIZE, (float)y * CHUNK_SIZE, -4.0f}, 1.0f, 1.0f, 1.0f, RED);
-        }
-    }
-
-    // for (int y = 0; y < WORLD_HEIGHT * TILE_SIZE; y+= TILE_SIZE) {
-    //     for (int x = 0; x < WORLD_WIDTH * TILE_SIZE; x+= TILE_SIZE) {
-    //         for (int z = 0; z < CHUNK_SIZE; ++z) {
-    //         // DrawRectangle(x,y,TILE_SIZE, TILE_SIZE, world[y][x].color);
-    //         }
-    //     }
-    // }
-}
-
 void DrawTerrainLayer(Texture2D noiseImage) {
     DrawTexture(noiseImage, 0, 0, WHITE);
-}
-
-void DrawChunkTextures(Texture2D texture, Chunk chunk, int x, int y) {
-    for (int i = 0; i < CHUNK_SIZE; ++i) {
-        for (int j = 0; j < CHUNK_SIZE; ++j) {
-            DrawTexture(texture, x * TILE_SIZE * j, y * TILE_SIZE * i, WHITE);
-        }
-    }
 }
 
 void PaintNormalMapPixelToImage(Image &img, const Image &normalMap, const int x, const int y) {
@@ -562,8 +527,68 @@ void DrawCubeTexture(Texture2D texture, Vector3 position, float width, float hei
     rlSetTexture(0);
 }
 
-void HandleFire() {
+void PaintBordersToImage(Image &img, float thickness) {
+    for (int x = 0; x < img.width; ++x) {
+        for (int y = 0; y < img.height; ++y) {
+            if (x <= thickness || y <= thickness || x >= img.width - thickness || y >= img.height - thickness) {
+                ImageDrawPixelV(&img, {(float)x,(float)y}, BLACK);
+            }
+        }
+    }
+}
 
+void HandleFire() {
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        Projectile proj = {{player.position.x, player.position.y}, 1.0f, 0.2f, -GetPlayerAimAngleRad() - PI/2.0f, 10};
+        projectiles.push_back(proj);
+    }
+}
+
+void HandleProjectiles() {
+    for (int i = 0; i < projectiles.size(); ++i) {
+        if (projectiles.at(i).velocity > 20.0f) {
+            projectiles.erase(projectiles.begin() + i);
+        }
+        else {
+            projectiles.at(i).velocity += projectiles.at(i).acceleration;
+            projectiles.at(i).position.x += projectiles.at(i).velocity * std::sin(projectiles.at(i).direction);
+            projectiles.at(i).position.y += projectiles.at(i).velocity * std::cos(projectiles.at(i).direction);
+            for (int j = 0; j < stoneBlocks.size(); ++j) {
+                if (projectiles.size() > 0) {
+                    Rectangle rec1 = {(stoneBlocks.at(j).position.x ) * TILE_SIZE, (stoneBlocks.at(j).position.y) * TILE_SIZE, TILE_SIZE, TILE_SIZE};
+                    Rectangle rec2 = {projectiles.at(i).position.x, projectiles.at(i).position.y, 8.0f, 8.0f};
+                    if (CheckCollisionRecs(rec1, rec2)) {
+                        if (stoneBlocks.at(j).health - projectiles.at(i).damage > 0) {
+                            stoneBlocks.at(j).health -= projectiles.at(i).damage;
+                        } else {
+                            stoneBlocks.erase(stoneBlocks.begin() + j);
+                        }
+                        // projectiles.at(i).velocity = 0;
+                        // projectiles.at(i).acceleration = 0;
+                        projectiles.erase(projectiles.begin() + i);
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+void DrawProjectiles() {
+    for (int i = 0; i < projectiles.size(); ++i) {
+        DrawCube({projectiles.at(i).position.x, projectiles.at(i).position.y, player.position.z}, 8.0f, 8.0f, 8.0f, RED);
+    }
+
+}
+
+void DrawStoneBlocks(const Texture2D &texture) {
+    for (int i = 0; i < stoneBlocks.size(); ++i) {
+        if (stoneBlocks.at(i).health > 0) {
+            DrawCubeTextureRec(texture, {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
+                        {(float)(stoneBlocks.at(i).position.x+1) * TILE_SIZE - TILE_SIZE/2, (float)(stoneBlocks.at(i).position.y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2 - 2.0f},
+                        TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
+        }
+    }
 }
 
 void runGameLoop() {
@@ -583,6 +608,7 @@ void runGameLoop() {
     });
     ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
     PaintNormalMapToImage(images[4], images[6], {-0.9f,-0.9f});
+    PaintBordersToImage(images[4], 1.0f);
 
     vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
     const vector<Texture2D> textures({
@@ -592,46 +618,39 @@ void runGameLoop() {
     });
 
 
-    vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
-    vector<vector<float>> chunkPerlinAverage(CHUNK_SIZE,  vector<float>(CHUNK_SIZE));
+
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, x * TILE_SIZE, y * TILE_SIZE, 0.05f);
-            chunkPerlinAverage[x][y] = GetPerlinAverage(noisePart);
+            if (GetPerlinAverage(noisePart) < 0.3f) {
+                StoneBlock block = {{(float)x, (float)y}, 30};
+                stoneBlocks.push_back(block);
+            }
             // rockPlacementTextures[x][y] = LoadTextureFromImage(noisePart);
             UnloadImage(noisePart);
         }
     }
+
+
+
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         UpdatePlayer();
         HandleInput();
         HandleCamera();
+        HandleFire();
+        HandleProjectiles();
 
         BeginDrawing();
             ClearBackground(BLACK);
             BeginMode3D(camera);
                 DrawTerrainTextureLayer(chunkTextures, images[3]);
                 DrawMapGrid();
-                for (int x = 0; x < CHUNK_SIZE; ++x) {
-                    for (int y = 0; y < CHUNK_SIZE; ++y) {
-                        // DrawTexture(rockPlacementTextures[x][y], x * TILE_SIZE, y * TILE_SIZE, WHITE);
-                        if (chunkPerlinAverage[x][y] < 0.3f) {
-                            // DrawCubeTexture(textures[2], {(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
-                            //     TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
-                            DrawCubeWiresV({(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
-                                {TILE_SIZE, TILE_SIZE, TILE_SIZE}, BLACK);
-                            DrawCubeTextureRec(textures[2], {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
-                                {(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2},
-                                TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
-                            // DrawCube({(float)(x+1) * TILE_SIZE - TILE_SIZE/2, (float)(y + 1) * TILE_SIZE - TILE_SIZE/2,-TILE_SIZE/2}, TILE_SIZE, TILE_SIZE, TILE_SIZE, ColorFromHSV(34, 0.6f, 0.72f));
-                        }
-                    }
-                }
-                // DrawCube({TILE_SIZE/2,TILE_SIZE/2,-TILE_SIZE/2}, TILE_SIZE, TILE_SIZE, TILE_SIZE, BLUE);
+                DrawStoneBlocks(textures[2]);
                 DrawPlayer();
+                DrawProjectiles();
             EndMode3D();
-            // DrawDebugUI();
+            DrawDebugUI();
             DrawFPS(10, 10);
         EndDrawing();
     }
