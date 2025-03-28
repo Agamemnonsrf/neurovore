@@ -41,6 +41,7 @@ struct Projectile {
     float acceleration;
     float direction;
     int damage;
+    std::string id;
 };
 
 struct StoneBlock {
@@ -53,6 +54,9 @@ Player player = {{1.0f, 1.0f, -20.0f}, RED}; // Slightly raised for depth
 std::random_device rd;  // Obtain a random seed from the hardware
 std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
 std::uniform_real_distribution<float> dist(0.0f, 1.0f); // Define range
+std::uniform_int_distribution<int> dist2(0, 25); // Define range
+const float seed = dist(gen) * 10000;
+const float seed2 = dist(gen) * 10000;
 vector<Projectile> projectiles;
 vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
 vector<StoneBlock> stoneBlocks;
@@ -242,6 +246,10 @@ void DrawDebugUI() {
     const std::string str6 = "player x: " + to_string(player.position.x);
     const std::string str7 = "player y: " + to_string(player.position.y);
     const std::string str8 = "zoom: " + to_string(cameraZoom);
+    const std::string str9 = "seed: " + to_string(seed);
+    const std::string str10 = "seed2: " + to_string(seed2);
+    const std::string str11 = "projectiles size: " + to_string(projectiles.size());
+    const std::string str12 = "projectiles capacity: " + to_string(projectiles.capacity());
     DrawText(str.c_str(), 10, 50, 20, BLACK);
     DrawText(str2.c_str(), 10, 100, 20, BLACK);
     DrawText(str3.c_str(), 10, 150, 20, BLACK);
@@ -250,6 +258,10 @@ void DrawDebugUI() {
     DrawText(str6.c_str(), 10, 300, 20, BLACK);
     DrawText(str7.c_str(), 10, 350, 20, BLACK);
     DrawText(str8.c_str(), 10, 400, 20, BLACK);
+    DrawText(str9.c_str(), 10, 450, 20, BLACK);
+    DrawText(str10.c_str(), 10, 500, 20, BLACK);
+    DrawText(str11.c_str(), 10, 550, 20, BLACK);
+    DrawText(str12.c_str(), 10, 600, 20, BLACK);
 
     DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
     DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
@@ -536,44 +548,66 @@ void PaintBordersToImage(Image &img, float thickness) {
         }
     }
 }
-
+std::string abcs = "abcdefghijklmnopqrstuvwxyz";
 void HandleFire() {
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Projectile proj = {{player.position.x, player.position.y}, 1.0f, 0.2f, -GetPlayerAimAngleRad() - PI/2.0f, 10};
+        std::string randstr;
+        for (int i = 0; i < 4; ++i) {
+            randstr[i] = abcs[dist2(gen)];
+        }
+        Projectile proj = {{player.position.x, player.position.y},
+            1.0f,
+            0.2f,
+            -GetPlayerAimAngleRad() - PI/2.0f,
+            10,
+            randstr
+        };
         projectiles.push_back(proj);
     }
 }
 
+// Projectile GetProjectileById (const std::string& id) {
+//     for (int i = 0; i < projectiles.size(); ++i) {
+//         if (projectiles.at(i).id == id) return projectiles.at(i);
+//     }
+//     return ;
+// }
 void HandleProjectiles() {
-    for (int i = 0; i < projectiles.size(); ++i) {
-        if (projectiles.at(i).velocity > 20.0f) {
-            projectiles.erase(projectiles.begin() + i);
-        }
-        else {
-            projectiles.at(i).velocity += projectiles.at(i).acceleration;
-            projectiles.at(i).position.x += projectiles.at(i).velocity * std::sin(projectiles.at(i).direction);
-            projectiles.at(i).position.y += projectiles.at(i).velocity * std::cos(projectiles.at(i).direction);
-            for (int j = 0; j < stoneBlocks.size(); ++j) {
-                if (projectiles.size() > 0) {
-                    Rectangle rec1 = {(stoneBlocks.at(j).position.x ) * TILE_SIZE, (stoneBlocks.at(j).position.y) * TILE_SIZE, TILE_SIZE, TILE_SIZE};
-                    Rectangle rec2 = {projectiles.at(i).position.x, projectiles.at(i).position.y, 8.0f, 8.0f};
-                    if (CheckCollisionRecs(rec1, rec2)) {
-                        if (stoneBlocks.at(j).health - projectiles.at(i).damage > 0) {
-                            stoneBlocks.at(j).health -= projectiles.at(i).damage;
-                        } else {
-                            stoneBlocks.erase(stoneBlocks.begin() + j);
-                        }
-                        // projectiles.at(i).velocity = 0;
-                        // projectiles.at(i).acceleration = 0;
-                        projectiles.erase(projectiles.begin() + i);
+    for (auto it = projectiles.begin(); it != projectiles.end();) {
+        if (it->velocity > 20.0f) {
+            it = projectiles.erase(it);
+        } else {
+            it->velocity += it->acceleration;
+            it->position.x += it->velocity * std::sin(it->direction);
+            it->position.y += it->velocity * std::cos(it->direction);
+
+            bool erased = false;
+            for (auto jt = stoneBlocks.begin(); jt != stoneBlocks.end();) {
+                Rectangle rec1 = {jt->position.x * TILE_SIZE, jt->position.y * TILE_SIZE, TILE_SIZE, TILE_SIZE};
+                Rectangle rec2 = {it->position.x, it->position.y, 8.0f, 8.0f};
+
+                if (CheckCollisionRecs(rec1, rec2)) {
+                    if (jt->health - it->damage > 0) {
+                        jt->health -= it->damage;
+                        ++jt;
+                    } else {
+                        jt = stoneBlocks.erase(jt);
                     }
+
+                    it = projectiles.erase(it);
+                    erased = true;
+                    break;
+                } else {
+                    ++jt;
                 }
+            }
+
+            if (!erased) {
+                ++it;
             }
         }
     }
-
 }
-
 void DrawProjectiles() {
     for (int i = 0; i < projectiles.size(); ++i) {
         DrawCube({projectiles.at(i).position.x, projectiles.at(i).position.y, player.position.z}, 8.0f, 8.0f, 8.0f, RED);
@@ -621,8 +655,8 @@ void runGameLoop() {
 
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
-            Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, x * TILE_SIZE, y * TILE_SIZE, 0.05f);
-            if (GetPerlinAverage(noisePart) < 0.3f) {
+            Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, x * TILE_SIZE  + seed, y * TILE_SIZE + seed2, 0.05f);
+            if (GetPerlinAverage(noisePart) < 0.4f) {
                 StoneBlock block = {{(float)x, (float)y}, 30};
                 stoneBlocks.push_back(block);
             }
@@ -646,6 +680,11 @@ void runGameLoop() {
             BeginMode3D(camera);
                 DrawTerrainTextureLayer(chunkTextures, images[3]);
                 DrawMapGrid();
+                // for (int x = 0; x < CHUNK_SIZE; ++x) {
+                //     for (int y = 0; y < CHUNK_SIZE; ++y) {
+                //         DrawTexture(rockPlacementTextures[x][y], x * TILE_SIZE, y * TILE_SIZE, WHITE);
+                //     }
+                // }
                 DrawStoneBlocks(textures[2]);
                 DrawPlayer();
                 DrawProjectiles();
