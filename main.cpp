@@ -14,9 +14,9 @@ using std::vector;
 
 constexpr int SCREEN_WIDTH = 1400;
 constexpr int SCREEN_HEIGHT = 800;
-constexpr int TILE_SIZE = 16;
+constexpr int TILE_SIZE = 64;
 constexpr int CHUNK_SIZE = 32;
-constexpr int WORLD_SIZE = 16;
+constexpr int WORLD_SIZE = 4;
 constexpr int TERRAIN_SIZE = WORLD_SIZE * CHUNK_SIZE * TILE_SIZE;
 constexpr int ACTUAL_CHUNK_SIZE = CHUNK_SIZE * TILE_SIZE;
 constexpr int WORLD_TILES = WORLD_SIZE * CHUNK_SIZE;
@@ -48,6 +48,11 @@ struct StoneBlock {
     int health;
 };
 
+struct IronOre {
+    Vector2 position;
+    int supply;
+};
+
 Player player = {{1.0f, 1.0f, -20.0f}, DARKBLUE}; // Slightly raised for depth
 // std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
 std::random_device rd;  // Obtain a random seed from the hardware
@@ -59,6 +64,7 @@ const float seed2 = dist(gen) * 10000;
 vector<Projectile> projectiles;
 vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
 vector<vector<StoneBlock>> stoneBlocks(WORLD_TILES, vector<StoneBlock>(WORLD_TILES));
+vector<vector<IronOre>> ironOres(WORLD_TILES, vector<IronOre>(WORLD_TILES));
 vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
 
 void sleep(const int ms) {
@@ -485,16 +491,18 @@ void PaintFiltersToImage(Image &img, const Image &normalMap) {
     }
 }
 
-void PrepareStoneBlockPlacements(const int chunkX, const int chunkY) {
+void PrepareBlockPlacements(const int chunkX, const int chunkY) {
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, ((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE + seed, ((y+1) + chunkY * CHUNK_SIZE)* TILE_SIZE  + seed2, 0.05f);
-            if (GetPerlinAverage(noisePart) < 0.4f) {
+            const float avg = GetPerlinAverage(noisePart);
+            if (avg < 0.4f) {
                 const StoneBlock block = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, 30};
                 stoneBlocks[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = block;
-            } else {
-                const StoneBlock block = {{0,0}, 0};
-                stoneBlocks[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = block;
+            }
+            if (avg > 0.8f) {
+                const IronOre ore = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, 100};
+                ironOres[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = ore;
             }
             // rockPlacementTextures[x][y] = LoadTextureFromImage(noisePart);
             UnloadImage(noisePart);
@@ -502,20 +510,26 @@ void PrepareStoneBlockPlacements(const int chunkX, const int chunkY) {
     }
 }
 
-void DrawStoneBlocks(const Texture2D &texture, int chunkX, int chunkY) {
+void DrawBlocks(const Texture2D &stoneTexture, const Texture2D &ironTexture, int chunkX, int chunkY) {
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             const StoneBlock block = stoneBlocks[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE];
-            if (block.health > 0 ) {
-                DrawCubeTextureRec(texture, {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
-                        {block.position.x, block.position.y,-TILE_SIZE/2 - 5.0f},
+            const IronOre ore = ironOres[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE];
+            if (block.health > 0) {
+                DrawCubeTextureRec(stoneTexture, {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
+                        {block.position.x, block.position.y,-TILE_SIZE/2 - 1.0f},
                         TILE_SIZE, TILE_SIZE, TILE_SIZE, WHITE);
+            }
+            if (ore.supply > 0) {
+                DrawCubeTextureRec(ironTexture, {(float)0, (float)0, TILE_SIZE, TILE_SIZE},
+                        {ore.position.x, ore.position.y,-TILE_SIZE/6 - 1.0f},
+                        TILE_SIZE, TILE_SIZE, TILE_SIZE/6, WHITE);
             }
         }
     }
 }
 
-void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, const Image &normalMap, const Texture2D &stoneTexture) {
+void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, const Image &normalMap, const Texture2D &stoneTexture, const Texture2D &ironTexture) {
     int playerChunkX = static_cast<int>(player.position.x / ACTUAL_CHUNK_SIZE);
     int playerChunkY = static_cast<int>(player.position.y / ACTUAL_CHUNK_SIZE);
 
@@ -531,10 +545,10 @@ void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, const Ima
                 PaintFiltersToImage(noisePart, normalMap);
                 chunkTextures[x][y] = LoadTextureFromImage(noisePart);
                 UnloadImage(noisePart);
-                PrepareStoneBlockPlacements(x, y);
+                PrepareBlockPlacements(x, y);
             }
             DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
-            DrawStoneBlocks(stoneTexture, x, y);
+            DrawBlocks(stoneTexture, ironTexture, x, y);
         }
     }
 }
@@ -662,24 +676,25 @@ void runGameLoop() {
         GenImageColor(TILE_SIZE, TILE_SIZE,
                 ColorFromHSV(25, 0.49f, 0.44f)),
         GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, 0, 0, 1.0f),
-        LoadImage("terrain-normal2.png")
+        LoadImage("terrain-normal2.png"),
+        GenImageColor(TILE_SIZE, TILE_SIZE,
+                ColorFromHSV(257, 0.11f, 0.3f)),
     });
     ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
     PaintNormalMapToImage(images[4], images[6], {-0.9f,-0.9f});
     PaintBordersToImage(images[4], 1.0f);
+
+    ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
+    PaintNormalMapToImage(images[7], images[6], {1,1});
+    PaintBordersToImage(images[7], 1.0f);
 
 
     const vector<Texture2D> textures({
         LoadTextureFromImage(images[0]),
         LoadTextureFromImage(images[3]),
         LoadTextureFromImage(images[4]),
+        LoadTextureFromImage(images[7]),
     });
-
-    // for (int x = 0; x < WORLD_SIZE; ++x) {
-    //     for (int y = 0; y < WORLD_SIZE; ++y) {
-    //         PrepareStoneBlockPlacements(x, y);
-    //     }
-    // }
 
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
@@ -692,7 +707,7 @@ void runGameLoop() {
         BeginDrawing();
             ClearBackground(BLACK);
             BeginMode3D(camera);
-                DrawTerrainTextureLayer(chunkTextures, images[3], textures[2]);
+                DrawTerrainTextureLayer(chunkTextures, images[3], textures[2], textures[3]);
                 DrawMapGrid();
                 // for (int x = 0; x < CHUNK_SIZE; ++x) {
                 //     for (int y = 0; y < CHUNK_SIZE; ++y) {
