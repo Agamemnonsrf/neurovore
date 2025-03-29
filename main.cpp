@@ -14,7 +14,7 @@ using std::vector;
 
 constexpr int SCREEN_WIDTH = 1400;
 constexpr int SCREEN_HEIGHT = 800;
-constexpr int TILE_SIZE = 64;
+constexpr int TILE_SIZE = 16;
 constexpr int CHUNK_SIZE = 32;
 constexpr int WORLD_SIZE = 16;
 constexpr int TERRAIN_SIZE = WORLD_SIZE * CHUNK_SIZE * TILE_SIZE;
@@ -48,7 +48,7 @@ struct StoneBlock {
     int health;
 };
 
-Player player = {{1.0f, 1.0f, -20.0f}, RED}; // Slightly raised for depth
+Player player = {{1.0f, 1.0f, -20.0f}, DARKBLUE}; // Slightly raised for depth
 // std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
 std::random_device rd;  // Obtain a random seed from the hardware
 std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
@@ -290,7 +290,7 @@ float cameraZoom = 0.0f;
 float GetPlayerAimAngleDeg() {
     const float ycalc = (float)GetMouseY() - SCREEN_HEIGHT/2;
     const float xcalc = (float)GetMouseX() - SCREEN_WIDTH/2;
-    const float angle = 180.0f/PI * std::atan2(ycalc,xcalc);
+    const float angle = RAD2DEG * std::atan2(ycalc,xcalc);
     return angle;
 }
 float GetPlayerAimAngleRad() {
@@ -577,25 +577,35 @@ void PaintBordersToImage(Image &img, const float thickness) {
         }
     }
 }
+
+float lastFireTime = 0.0f;  // Store the last time a projectile was fired
+float fireRate = 0.2f;       // Time in seconds between each shot
 void HandleFire() {
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Projectile proj = {{player.position.x, player.position.y},
-            1.0f,
-            0.2f,
-            -GetPlayerAimAngleRad() - PI/2.0f,
-            10,
-        };
-        projectiles.push_back(proj);
+    float currentTime = GetTime();  // Get the current time
+
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        // Fire a projectile only if enough time has passed since the last shot
+        if (currentTime - lastFireTime >= fireRate) {
+            Projectile proj = {{player.position.x, player.position.y},
+                1.0f,
+                0.2f,
+                (-GetPlayerAimAngleRad() - PI/2.0f) * RAD2DEG,
+                10,
+            };
+            projectiles.push_back(proj);
+            lastFireTime = currentTime;  // Update the time when the projectile was fired
+        }
     }
 }
+
 void HandleProjectiles() {
     for (auto it = projectiles.begin(); it != projectiles.end();) {
-        if (it->velocity > 20.0f) {
+        if (it->velocity > 10.0f) {
             it = projectiles.erase(it);
         } else {
             it->velocity += it->acceleration;
-            it->position.x += it->velocity * std::sin(it->direction);
-            it->position.y += it->velocity * std::cos(it->direction);
+            it->position.x += it->velocity * std::sin(it->direction * DEG2RAD);
+            it->position.y += it->velocity * std::cos(it->direction * DEG2RAD);
 
             bool erased = false;
             for (auto jt1 = stoneBlocks.begin(); jt1 != stoneBlocks.end() && !erased;) {
@@ -629,10 +639,14 @@ void HandleProjectiles() {
     }
 }
 void DrawProjectiles() {
-    for (int i = 0; i < projectiles.size(); ++i) {
-        DrawCube({projectiles.at(i).position.x, projectiles.at(i).position.y, player.position.z}, 8.0f, 8.0f, 8.0f, RED);
+    for (const auto& proj : projectiles) {
+        rlPushMatrix();
+        rlTranslatef(proj.position.x, proj.position.y, player.position.z);
+        rlRotatef(-proj.direction, 0.0f, 0.0f, 1.0f); // Rotate around the Z-axis
+        DrawCube({0.0f, 0.0f, 0.0f}, 2.0f, 16.0f, 2.0f, YELLOW);
+        DrawCubeWires({0.0f, 0.0f, 0.0f}, 2.0f, 16.0f, 2.0f, BLACK);
+        rlPopMatrix();
     }
-
 }
 
 void runGameLoop() {
