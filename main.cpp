@@ -24,6 +24,8 @@ constexpr int ACTUAL_CHUNK_SIZE = CHUNK_SIZE * TILE_SIZE;
 constexpr int WORLD_TILES = WORLD_SIZE * CHUNK_SIZE;
 constexpr float CAMERA_HEIGHT = 500.0f;
 constexpr float PLAYER_SPEED = 5.0f;
+constexpr int STONE_HEALTH = 30;
+constexpr int IRON_SUPPLY = 100;
 
 enum TileType { EMPTY, ORE, CONVEYOR, FACTORY };
 
@@ -55,7 +57,7 @@ struct IronOre {
     int supply;
 };
 
-Player player = {{1.0f, 1.0f, -20.0f}, DARKBLUE}; // Slightly raised for depth
+Player player = {{ACTUAL_CHUNK_SIZE * WORLD_SIZE/2, ACTUAL_CHUNK_SIZE * WORLD_SIZE/2, -20.0f}, DARKBLUE}; // Slightly raised for depth
 // std::vector<std::vector<Chunk>> world(WORLD_SIZE, std::vector<Chunk>(CHUNK_SIZE, {false, std::vector<Tile>(CHUNK_SIZE, {EMPTY, LIGHTGRAY})}));
 std::random_device rd;  // Obtain a random seed from the hardware
 std::mt19937 gen(rd()); // Initialize Mersenne Twister engine
@@ -81,7 +83,14 @@ struct ChunkFuture {
     std::future<Image> future;
 };
 
+struct BlockFuture {
+    int x;
+    int y;
+    std::future<void> future;
+};
+
 vector<ChunkFuture> futures;
+vector<BlockFuture> futuresBlocks;
 
 void sleep(const int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
@@ -363,7 +372,8 @@ void UpdatePlayer() {
 }
 
 void DrawPlayer() {
-    rlPushMatrix();
+    if (player.position.x != ACTUAL_CHUNK_SIZE * WORLD_SIZE/2 && player.position.y != ACTUAL_CHUNK_SIZE * WORLD_SIZE/2) {
+        rlPushMatrix();
         rlTranslatef(player.position.x,player.position.y,player.position.z);
         rlRotatef(GetPlayerAimAngleDeg(), 0.0f, 0.0f, 1.0f);
         rlTranslatef(-player.position.x,-player.position.y,-player.position.z);
@@ -371,7 +381,8 @@ void DrawPlayer() {
         DrawCube(player.position, 8.0f, 8.0f, 32.0f, player.color);
         DrawCube({player.position.x - 8.0f, player.position.y , player.position.z}, 8.0f, 8.0f, 32.0f, DARKGREEN);
         DrawCubeWires(player.position, 8.0f, 8.0f, 8.0f, BLACK);
-    rlPopMatrix();
+        rlPopMatrix();
+    }
 }
 
 void HandleInput() {
@@ -506,21 +517,31 @@ void PaintFiltersToImage(Image &img, const Image &normalMap) {
     }
 }
 
+std::mutex blockMutex;
 void PrepareBlockPlacements(const int chunkX, const int chunkY) {
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, ((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE + seed, ((y+1) + chunkY * CHUNK_SIZE)* TILE_SIZE  + seed2, 0.05f);
             const float avg = GetPerlinAverage(noisePart);
+            bool hasStoneOrIron = false;
             if (avg < 0.5f) {
-                const StoneBlock block = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, 30};
+                std::lock_guard<std::mutex> lock(blockMutex);
+                const StoneBlock block = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, STONE_HEALTH};
                 stoneBlocks[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = block;
+                hasStoneOrIron = true;
             }
             if (avg > 0.8f) {
-                const IronOre ore = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, 100};
+                std::lock_guard<std::mutex> lock(blockMutex);
+                const IronOre ore = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, IRON_SUPPLY};
                 ironOres[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = ore;
+                hasStoneOrIron = true;
             }
-            // rockPlacementTextures[x][y] = LoadTextureFromImage(noisePart);
             UnloadImage(noisePart);
+            if (!hasStoneOrIron && player.position.x == ACTUAL_CHUNK_SIZE * WORLD_SIZE/2 && player.position.x == ACTUAL_CHUNK_SIZE * WORLD_SIZE/2) {
+                std::lock_guard<std::mutex> lock(blockMutex);
+                player.position.x = (float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2;
+                player.position.y = (float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2;
+            }
         }
     }
 }
@@ -577,13 +598,33 @@ void DrawTerrainTextureAndBlockLayer(const Image &normalMap, const Texture2D &st
                 if (!futureExists) {
                     futures.push_back(ChunkFuture{x,y,std::async(std::launch::async, LoadChunkForTheFirstTime, std::ref(normalMap), x, y)});
                 }
-                PrepareBlockPlacements(x,y);
+                {
+                    std::lock_guard<std::mutex> glock(blockMutex);
+                    bool futureExistsBlocks = std::any_of(futuresBlocks.begin(), futuresBlocks.end(),
+                        [x, y](const BlockFuture& cf) {
+                            return cf.x == (float)x && cf.y == (float)y &&
+                                   cf.future.valid() &&
+                                   cf.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+                        });
+
+                    if (!futureExistsBlocks) {
+                        futuresBlocks.push_back(BlockFuture {x, y,std::async(std::launch::async, PrepareBlockPlacements, x, y)});
+                    }
+                }
             }
+
+
+                for (auto it = futuresBlocks.begin(); it != futuresBlocks.end(); ) {
+                    if (it->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        it = futuresBlocks.erase(it);  // Remove finished future
+                    } else {
+                        ++it;
+                    }
+                }
 
             for (auto it = futures.begin(); it != futures.end(); ) {
                 if (it->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     Image noisePart = it->future.get();  // Retrieve the generated noise
-
                     std::lock_guard<std::mutex> lock(textureMutex);
                     if (chunkTextures[it->x][it->y].width == 0) {
                         chunkTextures[it->x][it->y] = LoadTextureFromImage(noisePart);
@@ -603,7 +644,11 @@ void DrawTerrainTextureAndBlockLayer(const Image &normalMap, const Texture2D &st
                     DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
                 }
             }
-            DrawBlocks(stoneTexture, ironTexture, x, y);
+
+            {
+                std::lock_guard<std::mutex> lock(blockMutex);
+                DrawBlocks(stoneTexture, ironTexture, x, y);
+            }
         }
     }
 }
@@ -724,7 +769,7 @@ void runGameLoop() {
     camera.projection = CAMERA_CUSTOM;
 
     vector<Image> images({
-        GenImageChecked(TERRAIN_SIZE, TERRAIN_SIZE, CHUNK_SIZE * TILE_SIZE, CHUNK_SIZE * TILE_SIZE, LIGHTGRAY, SKYBLUE),
+        GenImageChecked(0, 0, CHUNK_SIZE * TILE_SIZE, CHUNK_SIZE * TILE_SIZE, LIGHTGRAY, SKYBLUE),
         LoadImage("sand-texture-small.png"),
         LoadImage("sand-grain.png"),
         LoadImage("terrain-normal2.png"),
@@ -763,13 +808,6 @@ void runGameLoop() {
             ClearBackground(BLACK);
             BeginMode3D(camera);
                 DrawTerrainTextureAndBlockLayer(images[3], textures[2], textures[3]);
-        // for (auto it = futures.begin(); it != futures.end(); ) {
-        //     if (it->wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-        //         it = futures.erase(it);
-        //     } else {
-        //         ++it;
-        //     }
-        // }
                 DrawMapGrid();
                 // for (int x = 0; x < CHUNK_SIZE; ++x) {
                 //     for (int y = 0; y < CHUNK_SIZE; ++y) {
