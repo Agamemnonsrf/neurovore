@@ -1,4 +1,6 @@
+#include <cassert>
 #include <complex>
+#include <future>
 #include <iostream>
 #include "raylib.h"
 #include "rlgl.h"
@@ -16,7 +18,7 @@ constexpr int SCREEN_WIDTH = 1400;
 constexpr int SCREEN_HEIGHT = 800;
 constexpr int TILE_SIZE = 64;
 constexpr int CHUNK_SIZE = 32;
-constexpr int WORLD_SIZE = 4;
+constexpr int WORLD_SIZE = 16;
 constexpr int TERRAIN_SIZE = WORLD_SIZE * CHUNK_SIZE * TILE_SIZE;
 constexpr int ACTUAL_CHUNK_SIZE = CHUNK_SIZE * TILE_SIZE;
 constexpr int WORLD_TILES = WORLD_SIZE * CHUNK_SIZE;
@@ -65,7 +67,21 @@ vector<Projectile> projectiles;
 vector<vector<Texture2D>> rockPlacementTextures(CHUNK_SIZE, vector<Texture2D>(CHUNK_SIZE));
 vector<vector<StoneBlock>> stoneBlocks(WORLD_TILES, vector<StoneBlock>(WORLD_TILES));
 vector<vector<IronOre>> ironOres(WORLD_TILES, vector<IronOre>(WORLD_TILES));
-vector<vector<Texture2D>> chunkTextures(WORLD_SIZE, vector<Texture2D>(WORLD_SIZE));
+vector<vector<Texture2D>> chunkTextures;
+void InitializeChunkTextures() {
+    chunkTextures.resize(WORLD_SIZE);
+    for (int i = 0; i < WORLD_SIZE; i++) {
+        chunkTextures[i].resize(WORLD_SIZE);
+    }
+}
+
+struct ChunkFuture {
+    int x;
+    int y;
+    std::future<Image> future;
+};
+
+vector<ChunkFuture> futures;
 
 void sleep(const int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
@@ -403,6 +419,7 @@ void DrawDebugUI() {
     const std::string str10 = "seed2: " + to_string(seed2);
     const std::string str11 = "projectiles size: " + to_string(projectiles.size());
     const std::string str12 = "projectiles capacity: " + to_string(projectiles.capacity());
+    const std::string str13 = "futures size: " + to_string(futures.size());
     DrawText(str.c_str(), 10, 50, 20, BLACK);
     DrawText(str2.c_str(), 10, 100, 20, BLACK);
     DrawText(str3.c_str(), 10, 150, 20, BLACK);
@@ -412,9 +429,7 @@ void DrawDebugUI() {
     DrawText(str7.c_str(), 10, 350, 20, BLACK);
     DrawText(str8.c_str(), 10, 400, 20, BLACK);
     DrawText(str9.c_str(), 10, 450, 20, BLACK);
-    DrawText(str10.c_str(), 10, 500, 20, BLACK);
-    DrawText(str11.c_str(), 10, 550, 20, BLACK);
-    DrawText(str12.c_str(), 10, 600, 20, BLACK);
+    DrawText(str13.c_str(), 10, 500, 20, WHITE);
 
     DrawLine(SCREEN_WIDTH/2, SCREEN_HEIGHT/2, GetMouseX(), GetMouseY(), RED);
     DrawLine(SCREEN_WIDTH/2 + 1, SCREEN_HEIGHT/2 + 1, GetMouseX(), GetMouseY(), RED);
@@ -496,7 +511,7 @@ void PrepareBlockPlacements(const int chunkX, const int chunkY) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
             Image noisePart = GenImagePerlinNoise(TILE_SIZE, TILE_SIZE, ((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE + seed, ((y+1) + chunkY * CHUNK_SIZE)* TILE_SIZE  + seed2, 0.05f);
             const float avg = GetPerlinAverage(noisePart);
-            if (avg < 0.4f) {
+            if (avg < 0.5f) {
                 const StoneBlock block = {{(float)((x+1)  + chunkX * CHUNK_SIZE)* TILE_SIZE - TILE_SIZE/2,(float)((y+1) + chunkY * CHUNK_SIZE) * TILE_SIZE - TILE_SIZE/2}, 30};
                 stoneBlocks[x + chunkX * CHUNK_SIZE][y + chunkY * CHUNK_SIZE] = block;
             }
@@ -529,7 +544,16 @@ void DrawBlocks(const Texture2D &stoneTexture, const Texture2D &ironTexture, int
     }
 }
 
-void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, const Image &normalMap, const Texture2D &stoneTexture, const Texture2D &ironTexture) {
+std::mutex textureMutex;
+Image LoadChunkForTheFirstTime(const Image &normalMap, const int x, const int y) {
+    // Generate noise **outside** of the mutex to prevent blocking other threads
+    Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE,
+                                          x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.3f);
+    PaintFiltersToImage(noisePart, normalMap);
+    return noisePart;
+}
+
+void DrawTerrainTextureAndBlockLayer(const Image &normalMap, const Texture2D &stoneTexture, const Texture2D &ironTexture) {
     int playerChunkX = static_cast<int>(player.position.x / ACTUAL_CHUNK_SIZE);
     int playerChunkY = static_cast<int>(player.position.y / ACTUAL_CHUNK_SIZE);
 
@@ -540,14 +564,45 @@ void DrawTerrainTextureLayer(vector<vector<Texture2D>> &chunkTextures, const Ima
 
     for (int x = startX; x <= endX; ++x) {
         for (int y = startY; y <= endY; ++y) {
-            if (chunkTextures[x][y].width == 0) {
-                Image noisePart = GenImagePerlinNoise(ACTUAL_CHUNK_SIZE, ACTUAL_CHUNK_SIZE, x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, 0.3f);
-                PaintFiltersToImage(noisePart, normalMap);
-                chunkTextures[x][y] = LoadTextureFromImage(noisePart);
-                UnloadImage(noisePart);
-                PrepareBlockPlacements(x, y);
+            // Lock the mutex when checking if the texture is loaded
+            if (chunkTextures[x][y].width == 0){
+                std::lock_guard<std::mutex> lock(textureMutex);
+                bool futureExists = std::any_of(futures.begin(), futures.end(),
+                    [x, y](const ChunkFuture& cf) {
+                        return cf.x == x && cf.y == y &&
+                               cf.future.valid() &&
+                               cf.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+                    });
+
+                if (!futureExists) {
+                    futures.push_back(ChunkFuture{x,y,std::async(std::launch::async, LoadChunkForTheFirstTime, std::ref(normalMap), x, y)});
+                }
+                PrepareBlockPlacements(x,y);
             }
-            DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
+
+            for (auto it = futures.begin(); it != futures.end(); ) {
+                if (it->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    Image noisePart = it->future.get();  // Retrieve the generated noise
+
+                    std::lock_guard<std::mutex> lock(textureMutex);
+                    if (chunkTextures[it->x][it->y].width == 0) {
+                        chunkTextures[it->x][it->y] = LoadTextureFromImage(noisePart);
+                        TraceLog(LOG_INFO, "Texture loaded for chunk: %d, %d", it->x, it->y);
+                    }
+
+                    UnloadImage(noisePart);  // Free image memory
+                    it = futures.erase(it);  // Remove finished future
+                } else {
+                    ++it;
+                }
+            }
+            // Ensure that the texture is loaded before drawing
+            {
+                std::lock_guard<std::mutex> lock(textureMutex);
+                if (chunkTextures[x][y].width > 0) {
+                    DrawTexture(chunkTextures[x][y], x * ACTUAL_CHUNK_SIZE, y * ACTUAL_CHUNK_SIZE, WHITE);
+                }
+            }
             DrawBlocks(stoneTexture, ironTexture, x, y);
         }
     }
@@ -682,7 +737,7 @@ void runGameLoop() {
     });
     ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
     PaintNormalMapToImage(images[4], images[6], {-0.9f,-0.9f});
-    PaintBordersToImage(images[4], 1.0f);
+    // PaintBordersToImage(images[4], 1.0f);
 
     ImageResize(&images[6], TILE_SIZE, TILE_SIZE);
     PaintNormalMapToImage(images[7], images[6], {1,1});
@@ -695,7 +750,7 @@ void runGameLoop() {
         LoadTextureFromImage(images[4]),
         LoadTextureFromImage(images[7]),
     });
-
+    InitializeChunkTextures();
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         UpdatePlayer();
@@ -707,7 +762,14 @@ void runGameLoop() {
         BeginDrawing();
             ClearBackground(BLACK);
             BeginMode3D(camera);
-                DrawTerrainTextureLayer(chunkTextures, images[3], textures[2], textures[3]);
+                DrawTerrainTextureAndBlockLayer(images[3], textures[2], textures[3]);
+        // for (auto it = futures.begin(); it != futures.end(); ) {
+        //     if (it->wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        //         it = futures.erase(it);
+        //     } else {
+        //         ++it;
+        //     }
+        // }
                 DrawMapGrid();
                 // for (int x = 0; x < CHUNK_SIZE; ++x) {
                 //     for (int y = 0; y < CHUNK_SIZE; ++y) {
@@ -723,7 +785,7 @@ void runGameLoop() {
                 DrawPlayer();
                 DrawProjectiles();
             EndMode3D();
-            // DrawDebugUI();
+            DrawDebugUI();
             DrawFPS(10, 10);
         EndDrawing();
     }
@@ -738,16 +800,17 @@ void runGameLoop() {
 
     for (int x = 0; x < WORLD_SIZE; ++x) {
         for (int y = 0; y < WORLD_SIZE; ++y) {
-            UnloadTexture(chunkTextures[x][y]);
+            if (chunkTextures[x][y].id != 0) UnloadTexture(chunkTextures[x][y]); // Unload chunk textures
         }
     }
 
     for (int x = 0; x < CHUNK_SIZE; ++x) {
         for (int y = 0; y < CHUNK_SIZE; ++y) {
-            UnloadTexture(rockPlacementTextures[x][y]);
+            if (rockPlacementTextures[x][y].id != 0) UnloadTexture(rockPlacementTextures[x][y]);
         }
     }
 
+    futures.clear();
 }
 
 
